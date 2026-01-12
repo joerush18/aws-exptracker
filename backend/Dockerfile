@@ -1,7 +1,7 @@
 # Backend API Dockerfile
 # Node.js API server (alternative to Lambda)
 
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
