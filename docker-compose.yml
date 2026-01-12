@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  # Backend API Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: expense-tracker-api
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - AWS_REGION=ap-southeast-2
+      - USERS_TABLE=users
+      - EXPENSES_TABLE=expenses
+      - JWT_SECRET=your-secret-key-change-in-production
+    volumes:
+      - ~/.aws:/home/nodejs/.aws:ro # Mount AWS credentials (read-only)
+    networks:
+      - expense-tracker-network
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: expense-tracker-frontend
+    ports:
+      - "80:80"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    depends_on:
+      - backend
+    networks:
+      - expense-tracker-network
+    restart: unless-stopped
+
+networks:
+  expense-tracker-network:
+    driver: bridge
