@@ -1,0 +1,13 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "expense-tracker"
+s3_bucket = "aws-sam-cli-deployments-ap-southeast-2"
+s3_prefix = "expense-tracker"
+region = "ap-southeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = []
+image_repositories = []
+

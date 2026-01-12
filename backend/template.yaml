@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Expense Tracker - University IT Masters Project
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs20.x
+    MemorySize: 256
+
+Resources:
+  # DynamoDB Tables
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+
+  # DynamoDB Table
+  ExpensesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: expenses
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: expenseId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: expenseId
+          KeyType: RANGE
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: expense-alerts
+      DisplayName: Expense Alert Notifications
+
+  # API Gateway
+  ExpenseApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: expense-tracker-api
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+        AllowCredentials: false
+        MaxAge: "'600'"
+
+  # Authentication Lambda Functions
+  SignupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: signup
+      CodeUri: functions/signup/
+      Handler: index.handler
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+      Events:
+        Signup:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExpenseApi
+            Path: /auth/signup
+            Method: POST
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+
+  LoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: login
+      CodeUri: functions/login/
+      Handler: index.handler
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          JWT_SECRET: !Sub "${AWS::StackName}-jwt-secret-${AWS::AccountId}"
+      Events:
+        Login:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExpenseApi
+            Path: /auth/login
+            Method: POST
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+
+  # Expense Lambda Functions
+  CreateExpenseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: createExpense
+      CodeUri: functions/createExpense/
+      Handler: index.handler
+      Environment:
+        Variables:
+          EXPENSES_TABLE: !Ref ExpensesTable
+          SNS_TOPIC_ARN: !Ref AlertTopic
+          TIMEZONE: Australia/Sydney
+          JWT_SECRET: !Sub "${AWS::StackName}-jwt-secret-${AWS::AccountId}"
+      Events:
+        CreateExpense:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExpenseApi
+            Path: /expenses
+            Method: POST
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExpensesTable
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref AlertTopic
+
+  GetExpensesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: getExpenses
+      CodeUri: functions/getExpenses/
+      Handler: index.handler
+      Environment:
+        Variables:
+          EXPENSES_TABLE: !Ref ExpensesTable
+          TIMEZONE: Australia/Sydney
+          JWT_SECRET: !Sub "${AWS::StackName}-jwt-secret-${AWS::AccountId}"
+      Events:
+        GetExpenses:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExpenseApi
+            Path: /expenses
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ExpensesTable
+
+  DeleteExpenseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: deleteExpense
+      CodeUri: functions/deleteExpense/
+      Handler: index.handler
+      Environment:
+        Variables:
+          EXPENSES_TABLE: !Ref ExpensesTable
+          TIMEZONE: Australia/Sydney
+          JWT_SECRET: !Sub "${AWS::StackName}-jwt-secret-${AWS::AccountId}"
+      Events:
+        DeleteExpense:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExpenseApi
+            Path: /expenses/{expenseId}
+            Method: DELETE
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExpensesTable
+
+  CheckThresholdFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: checkThreshold
+      CodeUri: functions/checkThreshold/
+      Handler: index.handler
+      Environment:
+        Variables:
+          EXPENSES_TABLE: !Ref ExpensesTable
+          SNS_TOPIC_ARN: !Ref AlertTopic
+          TIMEZONE: Australia/Sydney
+      Events:
+        CheckThreshold:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Enabled: true
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ExpensesTable
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref AlertTopic
+
+  # CloudFront Distribution for S3
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-expense-tracker-frontend"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${S3Bucket.Arn}/*"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: S3Origin
+            DomainName: !Sub "${S3Bucket}.s3-website-${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: Expense Tracker Frontend
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+
+Outputs:
+  ApiGatewayUrl:
+    Description: API Gateway Endpoint URL
+    Value: !Sub "https://${ExpenseApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+
+  CloudFrontUrl:
+    Description: CloudFront Distribution URL
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontUrl"
+
+  S3BucketName:
+    Description: S3 Bucket for Frontend
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-S3Bucket"
+
+  ExpensesTableName:
+    Description: DynamoDB Table Name
+    Value: !Ref ExpensesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ExpensesTable"
